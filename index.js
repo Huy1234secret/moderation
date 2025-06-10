@@ -10,10 +10,12 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = '1372572233930903592';
 const MOD_ROLE_IDS = ['1372979474857197688', '1381232791198367754'];
 const MUTE_ROLE_ID = '1374410305991610520';
+const BANNED_ROLE_ID = '1382000757200654427';
 const LOG_CHANNEL_ID = '1381652662642147439';
 // --- NEW: CHANNELS TO IGNORE FOR AUTO-MOD ---
 const IGNORED_CHANNEL_IDS = ['1380834420189298718'];
-const DATA_FILE = path.join(__dirname, 'mute_data.json');
+const PUNISH_FILE = path.join(__dirname, 'punishments.json');
+const WARN_FILE = path.join(__dirname, 'warns.json');
 // ---------------------
 
 const client = new Client({
@@ -25,79 +27,144 @@ const client = new Client({
     ],
 });
 
-let muteData = {};
+let punishmentData = {};
+let warnData = {};
 const userMessageCache = new Map();
 
 // --- DATA HANDLING ---
-function loadMuteData() {
+function loadData() {
     try {
-        if (fs.existsSync(DATA_FILE)) {
-            const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
-            muteData = JSON.parse(fileContent);
+        if (fs.existsSync(PUNISH_FILE)) {
+            const fileContent = fs.readFileSync(PUNISH_FILE, 'utf8');
+            punishmentData = JSON.parse(fileContent);
         } else {
-            muteData = {};
+            punishmentData = {};
+        }
+        if (fs.existsSync(WARN_FILE)) {
+            const warnContent = fs.readFileSync(WARN_FILE, 'utf8');
+            warnData = JSON.parse(warnContent);
+        } else {
+            warnData = {};
         }
     } catch (error) {
-        console.error("Failed to load mute data:", error);
-        muteData = {};
+        console.error("Failed to load moderation data:", error);
+        punishmentData = {};
+        warnData = {};
     }
 }
 
-function saveMuteData() {
+function saveData() {
     try {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(muteData, null, 4));
+        fs.writeFileSync(PUNISH_FILE, JSON.stringify(punishmentData, null, 4));
+        fs.writeFileSync(WARN_FILE, JSON.stringify(warnData, null, 4));
     } catch (error) {
-        console.error("Failed to save mute data:", error);
+        console.error("Failed to save moderation data:", error);
     }
 }
 
 // --- TASKS ---
-async function checkMutes() {
+async function checkPunishments() {
     const now = Date.now();
     const toRemove = [];
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
     if (!guild) return;
 
-    for (const [muteId, info] of Object.entries(muteData)) {
+    for (const [pid, info] of Object.entries(punishmentData)) {
         if (now >= info.endTime) {
             try {
                 const member = await guild.members.fetch(info.userId).catch(() => null);
                 if (member) {
-                    await member.roles.remove(MUTE_ROLE_ID, 'Mute expired');
-                    
-                    const unmuteEmbed = new EmbedBuilder()
-                        .setTitle(`You have been unmuted in ${guild.name}`)
-                        .setColor(0x57F287) // Green
-                        .setDescription("Your mute has expired and your permissions have been restored.")
+                    if (info.type === 'mute') {
+                        await member.roles.remove(MUTE_ROLE_ID, 'Mute expired');
+                    } else if (info.type === 'ban') {
+                        await member.roles.remove(BANNED_ROLE_ID, 'Ban expired');
+                    }
+
+                    const title = info.type === 'ban' ? 'Your ban has expired' : 'You have been unmuted';
+                    const embed = new EmbedBuilder()
+                        .setTitle(`${title} in ${guild.name}`)
+                        .setColor(0x57F287)
+                        .setDescription('Your punishment has expired and your permissions have been restored.')
                         .setTimestamp();
-                    await member.send({ embeds: [unmuteEmbed] }).catch(() => {});
+                    await member.send({ embeds: [embed] }).catch(() => {});
                 }
-                
+
                 const logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
                 if (logChannel) {
                     const logEmbed = new EmbedBuilder()
-                        .setTitle("Member Unmuted (Automatic)")
-                        .setColor(0x57F287) // Green
+                        .setTitle(`Member ${info.type === 'ban' ? 'Ban' : 'Mute'} Expired`)
+                        .setColor(0x57F287)
                         .addFields(
-                            { name: "User", value: member ? member.toString() : `<@${info.userId}>`, inline: true },
-                            { name: "Reason", value: "Mute duration expired", inline: true },
-                            { name: "Punishment ID", value: `\`${muteId}\`` }
+                            { name: 'User', value: member ? member.toString() : `<@${info.userId}>`, inline: true },
+                            { name: 'Reason', value: info.reason, inline: true },
+                            { name: 'Punishment ID', value: `\`${pid}\`` }
                         )
                         .setTimestamp()
-                        .setFooter({ text: "Automated Action" });
+                        .setFooter({ text: 'Automated Action' });
                     await logChannel.send({ embeds: [logEmbed] });
                 }
             } catch (error) {
-                console.error(`Error processing expired mute for user ${info.userId}:`, error);
+                console.error(`Error processing expired punishment for user ${info.userId}:`, error);
             }
-            toRemove.push(muteId);
+            toRemove.push(pid);
         }
     }
 
     if (toRemove.length > 0) {
-        toRemove.forEach(id => delete muteData[id]);
-        saveMuteData();
+        toRemove.forEach(id => delete punishmentData[id]);
+        saveData();
     }
+
+    // Expire old warnings
+    for (const [uid, warns] of Object.entries(warnData)) {
+        warnData[uid] = warns.filter(w => now - w.timestamp <= 30 * 24 * 60 * 60 * 1000);
+        if (warnData[uid].length === 0) delete warnData[uid];
+    }
+    saveData();
+}
+
+function addWarn(userId, reason) {
+    const warns = warnData[userId] || [];
+    const warnId = `${Date.now()}-${userId.slice(-4)}`;
+    warns.push({ id: warnId, reason, timestamp: Date.now() });
+    warnData[userId] = warns;
+    saveData();
+    return { warnId, warnCount: warns.length };
+}
+
+function determinePunishmentDuration(count) {
+    if (count <= 3) return 10;
+    if (count <= 6) return 30;
+    if (count <= 9) return 60;
+    if (count <= 14) return 360;
+    return 60 * 24 * 7; // 1 week
+}
+
+async function applyPunishment(member, type, durationMinutes, reason, moderatorId) {
+    const punishId = `${Date.now()}-${member.id.slice(-4)}`;
+    const endTime = Date.now() + durationMinutes * 60 * 1000;
+
+    punishmentData[punishId] = {
+        userId: member.id,
+        guildId: member.guild.id,
+        moderatorId,
+        reason,
+        endTime,
+        type
+    };
+    saveData();
+
+    const roleId = type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
+    await member.roles.add(roleId, reason);
+    return { punishId, endTime };
+}
+
+async function issueWarn(member, reason, moderatorId = client.user.id) {
+    const { warnId, warnCount } = addWarn(member.id, reason);
+    const duration = determinePunishmentDuration(warnCount);
+    const type = warnCount >= 15 ? 'ban' : 'mute';
+    const { punishId, endTime } = await applyPunishment(member, type, duration, reason, moderatorId);
+    return { warnId, warnCount, type, duration, punishId, endTime };
 }
 
 // --- AUTO-MODERATION HELPER ---
@@ -113,12 +180,26 @@ async function alertAndLog(message, reason) {
         )
         .setTimestamp();
 
+    const result = await issueWarn(message.member, reason, client.user.id);
+
+    embed.addFields(
+        { name: 'Action Taken', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
+        { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
+        { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+    );
+
     try {
         const dmEmbed = new EmbedBuilder()
-            .setTitle("Your Message Was Removed")
-            .setColor(0xED4245) // Red
-            .setDescription(`Your message in **${message.guild.name}** was automatically removed.`)
-            .addFields({ name: "Reason", value: reason });
+            .setTitle('Auto-Moderation Action')
+            .setColor(0xED4245)
+            .setDescription(`You received a warning in **${message.guild.name}**.`)
+            .addFields(
+                { name: 'Reason', value: reason },
+                { name: 'Current Warns', value: `${result.warnCount}` },
+                { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes` },
+                { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+            )
+            .setTimestamp();
         await message.author.send({ embeds: [dmEmbed] });
     } catch (error) {
         // Can't DM user
@@ -133,8 +214,8 @@ async function alertAndLog(message, reason) {
 // --- EVENTS ---
 client.once(Events.ClientReady, c => {
     console.log(`Logged in as ${c.user.tag}`);
-    loadMuteData();
-    setInterval(checkMutes, 30 * 1000); // Check every 30 seconds for responsiveness
+    loadData();
+    setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
 });
 
 client.on(Events.MessageCreate, async message => {
@@ -173,7 +254,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const { commandName } = interaction;
     
     // Permission check for all moderation commands
-    if (['mute', 'unmute', 'mod-log'].includes(commandName)) {
+    if (['mute', 'remove-punishment', 'mod-log'].includes(commandName)) {
         if (!interaction.member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id))) {
              // FIXED: Use ephemeral: true for private replies.
              return interaction.reply({ content: 'You do not have the required permissions to use this command.', ephemeral: true });
@@ -210,19 +291,7 @@ client.on(Events.InteractionCreate, async interaction => {
         // --- END OF HIERARCHY CHECKS ---
 
         try {
-            await user.roles.add(MUTE_ROLE_ID, reason);
-
-            const muteId = `${Date.now()}-${user.id.slice(-4)}`;
-            const endTime = Date.now() + duration * 60 * 1000;
-
-            muteData[muteId] = {
-                userId: user.id,
-                guildId: interaction.guild.id,
-                moderatorId: interaction.user.id,
-                reason: reason,
-                endTime: endTime,
-            };
-            saveMuteData();
+            const { punishId, endTime } = await applyPunishment(user, 'mute', duration, reason, interaction.user.id);
             
             // FIXED: Use ephemeral: true
             await interaction.reply({ content: `Successfully muted ${user.toString()} for ${duration} minutes.`, ephemeral: true });
@@ -252,7 +321,7 @@ client.on(Events.InteractionCreate, async interaction => {
                         { name: "Duration", value: `${duration} minutes`, inline: true },
                         { name: "Reason", value: reason },
                         { name: "Expires", value: `<t:${Math.floor(endTime / 1000)}:F>` },
-                        { name: "Punishment ID", value: `\`${muteId}\`` }
+                        { name: "Punishment ID", value: `\`${punishId}\`` }
                     )
                     .setTimestamp();
                 await logChannel.send({ embeds: [logEmbed] });
@@ -263,24 +332,25 @@ client.on(Events.InteractionCreate, async interaction => {
             // FIXED: Use ephemeral: true
             await interaction.reply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.', ephemeral: true });
         }
-    } else if (commandName === 'unmute') {
-        const muteId = interaction.options.getString('mute_id');
+    } else if (commandName === 'remove-punishment') {
+        const punishId = interaction.options.getString('id');
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
-        if (!muteData[muteId]) {
+        if (!punishmentData[punishId]) {
             // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `Mute ID \`${muteId}\` not found.`, ephemeral: true });
+            return interaction.reply({ content: `Mute ID \`${punishId}\` not found.`, ephemeral: true });
         }
 
-        const info = muteData[muteId];
+        const info = punishmentData[punishId];
         const user = await interaction.guild.members.fetch(info.userId).catch(() => null);
 
         if (user) {
-            await user.roles.remove(MUTE_ROLE_ID, reason);
+            const roleId = info.type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
+            await user.roles.remove(roleId, reason);
             await user.send({
                 embeds: [
                     new EmbedBuilder()
-                        .setTitle(`You have been unmuted in ${interaction.guild.name}`)
+                        .setTitle(`Your punishment was removed in ${interaction.guild.name}`)
                         .setColor(0x57F287) // Green
                         .setDescription(`Your permissions have been restored by a moderator.`)
                         .addFields({ name: "Reason", value: reason })
@@ -292,30 +362,30 @@ client.on(Events.InteractionCreate, async interaction => {
         const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
         if (logChannel) {
             const logEmbed = new EmbedBuilder()
-                .setTitle("Member Unmuted (Manual)")
+                .setTitle("Punishment Removed")
                 .setColor(0x57F287) // Green
                 .addFields(
                     { name: "User", value: user ? user.toString() : `<@${info.userId}>`, inline: true },
                     { name: "Moderator", value: interaction.user.toString(), inline: true },
                     { name: "Reason", value: reason, inline: false },
-                    { name: "Original Punishment ID", value: `\`${muteId}\`` }
+                    { name: "Original Punishment ID", value: `\`${punishId}\`` }
                 )
                 .setTimestamp();
             await logChannel.send({ embeds: [logEmbed] });
         }
-        
-        delete muteData[muteId];
-        saveMuteData();
+
+        delete punishmentData[punishId];
+        saveData();
         // FIXED: Use ephemeral: true
-        await interaction.reply({ content: `Successfully unmuted ${user ? user.toString() : `user ID ${info.userId}`}.`, ephemeral: true });
+        await interaction.reply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.`, ephemeral: true });
 
     } else if (commandName === 'mod-log') {
         const user = interaction.options.getUser('user');
-        const activeMutes = Object.entries(muteData).filter(([, data]) => data.userId === user.id && data.guildId === interaction.guild.id);
+        const activePunishments = Object.entries(punishmentData).filter(([, data]) => data.userId === user.id && data.guildId === interaction.guild.id);
 
-        if (activeMutes.length === 0) {
+        if (activePunishments.length === 0) {
             // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `${user.toString()} has no active mutes.`, ephemeral: true });
+            return interaction.reply({ content: `${user.toString()} has no active punishments.`, ephemeral: true });
         }
         
         const embed = new EmbedBuilder()
@@ -324,10 +394,10 @@ client.on(Events.InteractionCreate, async interaction => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-        activeMutes.forEach(([mid, data]) => {
+        activePunishments.forEach(([mid, data]) => {
             const moderator = interaction.guild.members.cache.get(data.moderatorId);
             embed.addFields({
-                name: `Mute ID: \`${mid}\``,
+                name: `${data.type === 'ban' ? 'Ban' : 'Mute'} ID: \`${mid}\``,
                 value: `**Reason:** ${data.reason}\n` +
                        `**Moderator:** ${moderator ? moderator.toString() : 'Unknown'}\n` +
                        `**Expires:** <t:${Math.floor(data.endTime / 1000)}:R>`
