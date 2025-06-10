@@ -254,7 +254,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const { commandName } = interaction;
     
     // Permission check for all moderation commands
-    if (['mute', 'remove-punishment', 'mod-log'].includes(commandName)) {
+    if (['mute', 'warn', 'remove-punishment', 'mod-log'].includes(commandName)) {
         if (!interaction.member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id))) {
              // FIXED: Use ephemeral: true for private replies.
              return interaction.reply({ content: 'You do not have the required permissions to use this command.', ephemeral: true });
@@ -332,13 +332,72 @@ client.on(Events.InteractionCreate, async interaction => {
             // FIXED: Use ephemeral: true
             await interaction.reply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.', ephemeral: true });
         }
+    } else if (commandName === 'warn') {
+        const user = interaction.options.getMember('user');
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        // --- HIERARCHY CHECKS ---
+        if (user.id === interaction.guild.ownerId) {
+            return interaction.reply({ content: 'You cannot warn the server owner.', ephemeral: true });
+        }
+
+        const botMember = await interaction.guild.members.fetch(client.user.id);
+        if (user.roles.highest.position >= botMember.roles.highest.position) {
+            return interaction.reply({ content: 'I cannot warn this user because they have a role equal to or higher than mine.', ephemeral: true });
+        }
+
+        if (user.roles.highest.position >= interaction.member.roles.highest.position) {
+            return interaction.reply({ content: 'You cannot warn this user because they have a role equal to or higher than yours.', ephemeral: true });
+        }
+        // --- END OF HIERARCHY CHECKS ---
+
+        try {
+            const result = await issueWarn(user, reason, interaction.user.id);
+
+            await interaction.reply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.`, ephemeral: true });
+
+            await user.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle(`You have been warned in ${interaction.guild.name}`)
+                        .setColor(0xED4245)
+                        .addFields(
+                            { name: 'Reason', value: reason },
+                            { name: 'Warn Count', value: `${result.warnCount}` },
+                            { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes` },
+                            { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                        )
+                        .setTimestamp()
+                ]
+            }).catch(() => {});
+
+            const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('Member Warned')
+                    .setColor(0xFEE75C)
+                    .addFields(
+                        { name: 'User', value: user.toString(), inline: true },
+                        { name: 'Moderator', value: interaction.user.toString(), inline: true },
+                        { name: 'Reason', value: reason },
+                        { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
+                        { name: 'Action', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
+                        { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                    )
+                    .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+            }
+        } catch (error) {
+            console.error(error);
+            await interaction.reply({ content: 'Failed to warn user. Please double-check my role permissions and hierarchy.', ephemeral: true });
+        }
     } else if (commandName === 'remove-punishment') {
         const punishId = interaction.options.getString('id');
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
         if (!punishmentData[punishId]) {
             // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `Mute ID \`${punishId}\` not found.`, ephemeral: true });
+            return interaction.reply({ content: `Punishment ID \`${punishId}\` not found.`, ephemeral: true });
         }
 
         const info = punishmentData[punishId];
