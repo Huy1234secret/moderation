@@ -24,15 +24,15 @@ const commands = [
                 .setRequired(false)),
     
     new SlashCommandBuilder()
-        .setName('unmute')
-        .setDescription('Manually unmutes a user using their punishment ID.')
+        .setName('remove-punishment')
+        .setDescription('Removes a mute or ban by its ID.')
         .addStringOption(option =>
-            option.setName('mute_id')
+            option.setName('id')
                 .setDescription('The ID of the punishment to remove.')
                 .setRequired(true))
         .addStringOption(option =>
             option.setName('reason')
-                .setDescription('The reason for the unmute.')
+                .setDescription('Reason for removal.')
                 .setRequired(false)),
 
     new SlashCommandBuilder()
