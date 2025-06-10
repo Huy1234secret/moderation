@@ -40,6 +40,11 @@ let punishmentData = {};
 let warnData = {};
 const userMessageCache = new Map();
 
+function isExempt(member) {
+    return member.id === member.guild.ownerId ||
+        member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id));
+}
+
 // --- SLASH COMMAND REGISTRATION ---
 const commands = [
     new SlashCommandBuilder()
@@ -242,6 +247,7 @@ async function issueWarn(member, reason, moderatorId = client.user.id) {
 
 // --- AUTO-MODERATION HELPER ---
 async function alertAndLog(message, reason) {
+    if (isExempt(message.member)) return;
     const embed = new EmbedBuilder()
         .setAuthor({ name: "Auto-Moderation Alert", iconURL: message.guild.iconURL() })
         .setColor(0xFEE75C) // Yellow
@@ -295,6 +301,8 @@ client.once(Events.ClientReady, async c => {
 client.on(Events.MessageCreate, async message => {
     if (message.author.bot || !message.guild) return;
 
+    if (isExempt(message.member)) return;
+
     // --- NEW: Check if the message is in an ignored channel ---
     if (IGNORED_CHANNEL_IDS.includes(message.channel.id)) {
         return; // Skip all auto-moderation for this channel
@@ -339,6 +347,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const user = interaction.options.getMember('user');
         const durationInput = interaction.options.getString('duration');
         const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        if (isExempt(user)) {
+            return interaction.reply({ content: 'You cannot mute the server owner or staff members.', ephemeral: true });
+        }
         
         const duration = parseInt(durationInput, 10);
         if (isNaN(duration) || duration <= 0) {
@@ -409,6 +421,10 @@ client.on(Events.InteractionCreate, async interaction => {
     } else if (commandName === 'warn') {
         const user = interaction.options.getMember('user');
         const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        if (isExempt(user)) {
+            return interaction.reply({ content: 'You cannot warn the server owner or staff members.', ephemeral: true });
+        }
 
         // --- HIERARCHY CHECKS ---
         if (user.id === interaction.guild.ownerId) {
