@@ -2,11 +2,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 // MODIFIED: Removed InteractionResponseFlags as it's no longer needed.
-const { Client, GatewayIntentBits, EmbedBuilder, Events } = require('discord.js');
+const {
+    Client,
+    GatewayIntentBits,
+    EmbedBuilder,
+    Events,
+    REST,
+    Routes,
+    SlashCommandBuilder
+} = require('discord.js');
 require('dotenv').config();
 
 // --- CONFIGURATION ---
 const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = '1372572233930903592';
 const MOD_ROLE_IDS = ['1372979474857197688', '1381232791198367754'];
 const MUTE_ROLE_ID = '1374410305991610520';
@@ -30,6 +39,75 @@ const client = new Client({
 let punishmentData = {};
 let warnData = {};
 const userMessageCache = new Map();
+
+function isStaff(member) {
+    return member.id === member.guild.ownerId ||
+        MOD_ROLE_IDS.some(id => member.roles.cache.has(id));
+}
+
+// --- SLASH COMMAND REGISTRATION ---
+const commands = [
+    new SlashCommandBuilder()
+        .setName('mute')
+        .setDescription('Mutes a user for a specified duration.')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to mute.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('duration')
+                .setDescription('Duration of the mute in minutes (e.g., "60").')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('The reason for the mute.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('warn')
+        .setDescription('Warns a user and applies an automatic punishment.')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to warn.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('The reason for the warning.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('remove-punishment')
+        .setDescription('Removes a mute or ban by its ID.')
+        .addStringOption(option =>
+            option.setName('id')
+                .setDescription('The ID of the punishment to remove.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('Reason for removal.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('mod-log')
+        .setDescription("Checks a user's current active punishments.")
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to check.')
+                .setRequired(true)),
+].map(command => command.toJSON());
+
+async function registerCommands() {
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
+    try {
+        const data = await rest.put(
+            Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+            { body: commands }
+        );
+        console.log(`Registered ${data.length} application commands.`);
+    } catch (error) {
+        console.error('Failed to register commands:', error);
+    }
+}
 
 // --- DATA HANDLING ---
 function loadData() {
@@ -169,6 +247,7 @@ async function issueWarn(member, reason, moderatorId = client.user.id) {
 
 // --- AUTO-MODERATION HELPER ---
 async function alertAndLog(message, reason) {
+    if (isStaff(message.member)) return;
     const embed = new EmbedBuilder()
         .setAuthor({ name: "Auto-Moderation Alert", iconURL: message.guild.iconURL() })
         .setColor(0xFEE75C) // Yellow
@@ -212,8 +291,9 @@ async function alertAndLog(message, reason) {
 }
 
 // --- EVENTS ---
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
     console.log(`Logged in as ${c.user.tag}`);
+    await registerCommands();
     loadData();
     setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
 });
@@ -254,7 +334,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const { commandName } = interaction;
     
     // Permission check for all moderation commands
-    if (['mute', 'remove-punishment', 'mod-log'].includes(commandName)) {
+    if (['mute', 'warn', 'remove-punishment', 'mod-log'].includes(commandName)) {
         if (!interaction.member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id))) {
              // FIXED: Use ephemeral: true for private replies.
              return interaction.reply({ content: 'You do not have the required permissions to use this command.', ephemeral: true });
@@ -265,6 +345,10 @@ client.on(Events.InteractionCreate, async interaction => {
         const user = interaction.options.getMember('user');
         const durationInput = interaction.options.getString('duration');
         const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        if (isStaff(user)) {
+            return interaction.reply({ content: 'You cannot mute the server owner or staff members.', ephemeral: true });
+        }
         
         const duration = parseInt(durationInput, 10);
         if (isNaN(duration) || duration <= 0) {
@@ -332,13 +416,76 @@ client.on(Events.InteractionCreate, async interaction => {
             // FIXED: Use ephemeral: true
             await interaction.reply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.', ephemeral: true });
         }
+    } else if (commandName === 'warn') {
+        const user = interaction.options.getMember('user');
+        const reason = interaction.options.getString('reason') || 'No reason provided';
+
+        if (isStaff(user)) {
+            return interaction.reply({ content: 'You cannot warn the server owner or staff members.', ephemeral: true });
+        }
+
+        // --- HIERARCHY CHECKS ---
+        if (user.id === interaction.guild.ownerId) {
+            return interaction.reply({ content: 'You cannot warn the server owner.', ephemeral: true });
+        }
+
+        const botMember = await interaction.guild.members.fetch(client.user.id);
+        if (user.roles.highest.position >= botMember.roles.highest.position) {
+            return interaction.reply({ content: 'I cannot warn this user because they have a role equal to or higher than mine.', ephemeral: true });
+        }
+
+        if (user.roles.highest.position >= interaction.member.roles.highest.position) {
+            return interaction.reply({ content: 'You cannot warn this user because they have a role equal to or higher than yours.', ephemeral: true });
+        }
+        // --- END OF HIERARCHY CHECKS ---
+
+        try {
+            const result = await issueWarn(user, reason, interaction.user.id);
+
+            await interaction.reply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.`, ephemeral: true });
+
+            await user.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle(`You have been warned in ${interaction.guild.name}`)
+                        .setColor(0xED4245)
+                        .addFields(
+                            { name: 'Reason', value: reason },
+                            { name: 'Warn Count', value: `${result.warnCount}` },
+                            { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes` },
+                            { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                        )
+                        .setTimestamp()
+                ]
+            }).catch(() => {});
+
+            const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('Member Warned')
+                    .setColor(0xFEE75C)
+                    .addFields(
+                        { name: 'User', value: user.toString(), inline: true },
+                        { name: 'Moderator', value: interaction.user.toString(), inline: true },
+                        { name: 'Reason', value: reason },
+                        { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
+                        { name: 'Action', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
+                        { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                    )
+                    .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+            }
+        } catch (error) {
+            console.error(error);
+            await interaction.reply({ content: 'Failed to warn user. Please double-check my role permissions and hierarchy.', ephemeral: true });
+        }
     } else if (commandName === 'remove-punishment') {
         const punishId = interaction.options.getString('id');
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
         if (!punishmentData[punishId]) {
             // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `Mute ID \`${punishId}\` not found.`, ephemeral: true });
+            return interaction.reply({ content: `Punishment ID \`${punishId}\` not found.`, ephemeral: true });
         }
 
         const info = punishmentData[punishId];
