@@ -10,7 +10,7 @@ const commands = [
     new SlashCommandBuilder()
         .setName('mute')
         .setDescription('Mutes a user for a specified duration.')
-        .addUserOption(option => 
+        .addUserOption(option =>
             option.setName('user')
                 .setDescription('The user to mute.')
                 .setRequired(true))
@@ -21,6 +21,18 @@ const commands = [
         .addStringOption(option =>
             option.setName('reason')
                 .setDescription('The reason for the mute.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('warn')
+        .setDescription('Warns a user and applies an automatic punishment.')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to warn.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('The reason for the warning.')
                 .setRequired(false)),
     
     new SlashCommandBuilder()
