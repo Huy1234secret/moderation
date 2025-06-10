@@ -2,11 +2,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 // MODIFIED: Removed InteractionResponseFlags as it's no longer needed.
-const { Client, GatewayIntentBits, EmbedBuilder, Events } = require('discord.js');
+const {
+    Client,
+    GatewayIntentBits,
+    EmbedBuilder,
+    Events,
+    REST,
+    Routes,
+    SlashCommandBuilder
+} = require('discord.js');
 require('dotenv').config();
 
 // --- CONFIGURATION ---
 const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = '1372572233930903592';
 const MOD_ROLE_IDS = ['1372979474857197688', '1381232791198367754'];
 const MUTE_ROLE_ID = '1374410305991610520';
@@ -30,6 +39,70 @@ const client = new Client({
 let punishmentData = {};
 let warnData = {};
 const userMessageCache = new Map();
+
+// --- SLASH COMMAND REGISTRATION ---
+const commands = [
+    new SlashCommandBuilder()
+        .setName('mute')
+        .setDescription('Mutes a user for a specified duration.')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to mute.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('duration')
+                .setDescription('Duration of the mute in minutes (e.g., "60").')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('The reason for the mute.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('warn')
+        .setDescription('Warns a user and applies an automatic punishment.')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to warn.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('The reason for the warning.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('remove-punishment')
+        .setDescription('Removes a mute or ban by its ID.')
+        .addStringOption(option =>
+            option.setName('id')
+                .setDescription('The ID of the punishment to remove.')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('reason')
+                .setDescription('Reason for removal.')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('mod-log')
+        .setDescription("Checks a user's current active punishments.")
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to check.')
+                .setRequired(true)),
+].map(command => command.toJSON());
+
+async function registerCommands() {
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
+    try {
+        const data = await rest.put(
+            Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+            { body: commands }
+        );
+        console.log(`Registered ${data.length} application commands.`);
+    } catch (error) {
+        console.error('Failed to register commands:', error);
+    }
+}
 
 // --- DATA HANDLING ---
 function loadData() {
@@ -212,8 +285,9 @@ async function alertAndLog(message, reason) {
 }
 
 // --- EVENTS ---
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
     console.log(`Logged in as ${c.user.tag}`);
+    await registerCommands();
     loadData();
     setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
 });
