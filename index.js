@@ -21,6 +21,8 @@ const MOD_ROLE_IDS = ['1372979474857197688', '1381232791198367754'];
 const MUTE_ROLE_ID = '1374410305991610520';
 const BANNED_ROLE_ID = '1382000757200654427';
 const LOG_CHANNEL_ID = '1381652662642147439';
+// Channel for logging bot errors
+const BOT_LOG_CHANNEL_ID = '1383481711651721307';
 // --- NEW: CHANNELS TO IGNORE FOR AUTO-MOD ---
 const IGNORED_CHANNEL_IDS = ['1380834420189298718'];
 const PUNISH_FILE = path.join(__dirname, 'punishments.json');
@@ -39,6 +41,15 @@ const client = new Client({
 let punishmentData = {};
 let warnData = {};
 const userMessageCache = new Map();
+let botLogChannel = null;
+
+async function reportError(error) {
+    console.error(error);
+    if (botLogChannel) {
+        const message = `Error: ${error && error.stack ? error.stack : error}`;
+        await botLogChannel.send(message).catch(() => {});
+    }
+}
 
 function isExempt(member) {
     return member.id === member.guild.ownerId ||
@@ -117,7 +128,7 @@ async function registerCommands() {
         );
         console.log(`Registered ${data.length} application commands.`);
     } catch (error) {
-        console.error('Failed to register commands:', error);
+        await reportError(`Failed to register commands: ${error}`);
     }
 }
 
@@ -137,7 +148,7 @@ function loadData() {
             warnData = {};
         }
     } catch (error) {
-        console.error("Failed to load moderation data:", error);
+        await reportError(`Failed to load moderation data: ${error}`);
         punishmentData = {};
         warnData = {};
     }
@@ -148,7 +159,7 @@ function saveData() {
         fs.writeFileSync(PUNISH_FILE, JSON.stringify(punishmentData, null, 4));
         fs.writeFileSync(WARN_FILE, JSON.stringify(warnData, null, 4));
     } catch (error) {
-        console.error("Failed to save moderation data:", error);
+        await reportError(`Failed to save moderation data: ${error}`);
     }
 }
 
@@ -194,7 +205,7 @@ async function checkPunishments() {
                     await logChannel.send({ embeds: [logEmbed] });
                 }
             } catch (error) {
-                console.error(`Error processing expired punishment for user ${info.userId}:`, error);
+                await reportError(`Error processing expired punishment for user ${info.userId}: ${error}`);
             }
             toRemove.push(pid);
         }
@@ -307,6 +318,7 @@ client.once(Events.ClientReady, async c => {
     console.log(`Logged in as ${c.user.tag}`);
     await registerCommands();
     loadData();
+    botLogChannel = await client.channels.fetch(BOT_LOG_CHANNEL_ID).catch(() => null);
     setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
 });
 
@@ -346,7 +358,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
-    
+
+    try {
+
     // Permission check for all moderation commands
     if (['mute', 'warn', 'remove-punishment', 'mod-log', 'clear-message'].includes(commandName)) {
         if (!interaction.member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id))) {
@@ -427,7 +441,7 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
         } catch (error) {
-            console.error(error);
+            await reportError(error);
             await interaction.editReply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.' });
         }
     } else if (commandName === 'warn') {
@@ -492,7 +506,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 await logChannel.send({ embeds: [logEmbed] });
             }
         } catch (error) {
-            console.error(error);
+            await reportError(error);
             await interaction.editReply({ content: 'Failed to warn user. Please double-check my role permissions and hierarchy.' });
         }
     } else if (commandName === 'remove-punishment') {
@@ -509,39 +523,44 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.deferReply({ ephemeral: true });
 
-        if (user) {
-            const roleId = info.type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
-            await user.roles.remove(roleId, reason);
-            await user.send({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle(`Your punishment was removed in ${interaction.guild.name}`)
-                        .setColor(0x57F287) // Green
-                        .setDescription(`Your permissions have been restored by a moderator.`)
-                        .addFields({ name: "Reason", value: reason })
-                        .setTimestamp()
-                ]
-            }).catch(() => {});
-        }
-        
-        const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
-        if (logChannel) {
-            const logEmbed = new EmbedBuilder()
-                .setTitle("Punishment Removed")
-                .setColor(0x57F287) // Green
-                .addFields(
-                    { name: "User", value: user ? user.toString() : `<@${info.userId}>`, inline: true },
-                    { name: "Moderator", value: interaction.user.toString(), inline: true },
-                    { name: "Reason", value: reason, inline: false },
-                    { name: "Original Punishment ID", value: `\`${punishId}\`` }
-                )
-                .setTimestamp();
-            await logChannel.send({ embeds: [logEmbed] });
-        }
+        try {
+            if (user) {
+                const roleId = info.type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
+                await user.roles.remove(roleId, reason);
+                await user.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle(`Your punishment was removed in ${interaction.guild.name}`)
+                            .setColor(0x57F287) // Green
+                            .setDescription(`Your permissions have been restored by a moderator.`)
+                            .addFields({ name: "Reason", value: reason })
+                            .setTimestamp()
+                    ]
+                }).catch(() => {});
+            }
 
-        delete punishmentData[punishId];
-        saveData();
-        await interaction.editReply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.` });
+            const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle("Punishment Removed")
+                    .setColor(0x57F287) // Green
+                    .addFields(
+                        { name: "User", value: user ? user.toString() : `<@${info.userId}>`, inline: true },
+                        { name: "Moderator", value: interaction.user.toString(), inline: true },
+                        { name: "Reason", value: reason, inline: false },
+                        { name: "Original Punishment ID", value: `\`${punishId}\`` }
+                    )
+                    .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+            }
+
+            delete punishmentData[punishId];
+            saveData();
+            await interaction.editReply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.` });
+        } catch (error) {
+            await reportError(error);
+            await interaction.editReply({ content: 'Failed to remove punishment. Please check my permissions.' });
+        }
 
     } else if (commandName === 'mod-log') {
         const user = interaction.options.getUser('user');
@@ -590,16 +609,22 @@ client.on(Events.InteractionCreate, async interaction => {
             const deleted = await interaction.channel.bulkDelete(toDelete, true);
             await interaction.editReply({ content: `Deleted ${deleted.size} messages${targetUser ? ` from ${targetUser.tag}` : ''}.` });
         } catch (error) {
-            console.error(error);
+            await reportError(error);
             await interaction.editReply({ content: 'Failed to delete messages. Please check my permissions.' });
+        }
+    }
+    } catch (error) {
+        await reportError(error);
+        if (!interaction.replied) {
+            await interaction.reply({ content: 'An unexpected error occurred.', ephemeral: true });
         }
     }
 });
 
 // Add a general error handler to prevent unexpected crashes
-client.on('error', console.error);
+client.on('error', reportError);
 process.on('unhandledRejection', error => {
-    console.error('Unhandled promise rejection:', error);
+    reportError(error);
 });
 
 client.login(TOKEN);
