@@ -94,6 +94,18 @@ const commands = [
             option.setName('user')
                 .setDescription('The user to check.')
                 .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('clear-message')
+        .setDescription('Bulk deletes a number of recent messages.')
+        .addIntegerOption(option =>
+            option.setName('count')
+                .setDescription('Number of messages to delete (max 100).')
+                .setRequired(true))
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('Only delete messages from this user.')
+                .setRequired(false)),
 ].map(command => command.toJSON());
 
 async function registerCommands() {
@@ -336,7 +348,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const { commandName } = interaction;
     
     // Permission check for all moderation commands
-    if (['mute', 'warn', 'remove-punishment', 'mod-log'].includes(commandName)) {
+    if (['mute', 'warn', 'remove-punishment', 'mod-log', 'clear-message'].includes(commandName)) {
         if (!interaction.member.roles.cache.some(r => MOD_ROLE_IDS.includes(r.id))) {
              // FIXED: Use ephemeral: true for private replies.
              return interaction.reply({ content: 'You do not have the required permissions to use this command.', ephemeral: true });
@@ -559,6 +571,28 @@ client.on(Events.InteractionCreate, async interaction => {
         });
         
         await interaction.editReply({ embeds: [embed] });
+    } else if (commandName === 'clear-message') {
+        const count = interaction.options.getInteger('count');
+        const targetUser = interaction.options.getUser('user');
+
+        if (count <= 0 || count > 100) {
+            return interaction.reply({ content: 'Count must be between 1 and 100.', ephemeral: true });
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+            let messages = await interaction.channel.messages.fetch({ limit: 100 });
+            if (targetUser) {
+                messages = messages.filter(m => m.author.id === targetUser.id);
+            }
+            const toDelete = messages.first(count);
+            const deleted = await interaction.channel.bulkDelete(toDelete, true);
+            await interaction.editReply({ content: `Deleted ${deleted.size} messages${targetUser ? ` from ${targetUser.tag}` : ''}.` });
+        } catch (error) {
+            console.error(error);
+            await interaction.editReply({ content: 'Failed to delete messages. Please check my permissions.' });
+        }
     }
 });
 
