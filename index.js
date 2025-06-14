@@ -376,11 +376,12 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         // --- END OF HIERARCHY CHECKS ---
 
+        await interaction.deferReply({ ephemeral: true });
+
         try {
             const { punishId, endTime } = await applyPunishment(user, 'mute', duration, reason, interaction.user.id);
-            
-            // FIXED: Use ephemeral: true
-            await interaction.reply({ content: `Successfully muted ${user.toString()} for ${duration} minutes.`, ephemeral: true });
+
+            await interaction.editReply({ content: `Successfully muted ${user.toString()} for ${duration} minutes.` });
 
             await user.send({
                 embeds: [
@@ -415,8 +416,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         } catch (error) {
             console.error(error);
-            // FIXED: Use ephemeral: true
-            await interaction.reply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.', ephemeral: true });
+            await interaction.editReply({ content: 'Failed to mute user. Please double-check my role permissions and hierarchy.' });
         }
     } else if (commandName === 'warn') {
         const user = interaction.options.getMember('user');
@@ -441,10 +441,12 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         // --- END OF HIERARCHY CHECKS ---
 
+        await interaction.deferReply({ ephemeral: true });
+
         try {
             const result = await issueWarn(user, reason, interaction.user.id);
 
-            await interaction.reply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.`, ephemeral: true });
+            await interaction.editReply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.` });
 
             await user.send({
                 embeds: [
@@ -479,7 +481,7 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         } catch (error) {
             console.error(error);
-            await interaction.reply({ content: 'Failed to warn user. Please double-check my role permissions and hierarchy.', ephemeral: true });
+            await interaction.editReply({ content: 'Failed to warn user. Please double-check my role permissions and hierarchy.' });
         }
     } else if (commandName === 'remove-punishment') {
         const punishId = interaction.options.getString('id');
@@ -492,6 +494,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const info = punishmentData[punishId];
         const user = await interaction.guild.members.fetch(info.userId).catch(() => null);
+
+        await interaction.deferReply({ ephemeral: true });
 
         if (user) {
             const roleId = info.type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
@@ -525,8 +529,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         delete punishmentData[punishId];
         saveData();
-        // FIXED: Use ephemeral: true
-        await interaction.reply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.`, ephemeral: true });
+        await interaction.editReply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.` });
 
     } else if (commandName === 'mod-log') {
         const user = interaction.options.getUser('user');
@@ -537,6 +540,8 @@ client.on(Events.InteractionCreate, async interaction => {
             return interaction.reply({ content: `${user.toString()} has no active punishments.`, ephemeral: true });
         }
         
+        await interaction.deferReply({ ephemeral: true });
+
         const embed = new EmbedBuilder()
             .setTitle(`Active Punishments for ${user.tag}`)
             .setColor(0x5865F2) // Blurple
@@ -553,8 +558,7 @@ client.on(Events.InteractionCreate, async interaction => {
             });
         });
         
-        // FIXED: Use ephemeral: true
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.editReply({ embeds: [embed] });
     }
 });
 
