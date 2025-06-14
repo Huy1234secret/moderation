@@ -54,6 +54,18 @@ const commands = [
             option.setName('user')
                 .setDescription('The user to check.')
                 .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('clear-message')
+        .setDescription('Bulk deletes a number of recent messages.')
+        .addIntegerOption(option =>
+            option.setName('count')
+                .setDescription('Number of messages to delete (max 100).')
+                .setRequired(true))
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('Only delete messages from this user.')
+                .setRequired(false)),
 ]
 .map(command => command.toJSON());
 
