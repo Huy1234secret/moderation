@@ -148,7 +148,7 @@ function loadData() {
             warnData = {};
         }
     } catch (error) {
-        await reportError(`Failed to load moderation data: ${error}`);
+        reportError(`Failed to load moderation data: ${error}`);
         punishmentData = {};
         warnData = {};
     }
@@ -159,7 +159,7 @@ function saveData() {
         fs.writeFileSync(PUNISH_FILE, JSON.stringify(punishmentData, null, 4));
         fs.writeFileSync(WARN_FILE, JSON.stringify(warnData, null, 4));
     } catch (error) {
-        await reportError(`Failed to save moderation data: ${error}`);
+        reportError(`Failed to save moderation data: ${error}`);
     }
 }
 
