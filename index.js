@@ -27,6 +27,7 @@ const BOT_LOG_CHANNEL_ID = '1383481711651721307';
 const IGNORED_CHANNEL_IDS = ['1380834420189298718'];
 const PUNISH_FILE = path.join(__dirname, 'punishments.json');
 const WARN_FILE = path.join(__dirname, 'warns.json');
+const PUNISH_DELAY_MS = 10 * 1000; // delay between punishments for the same user
 // ---------------------
 
 const client = new Client({
@@ -41,6 +42,7 @@ const client = new Client({
 let punishmentData = {};
 let warnData = {};
 const userMessageCache = new Map();
+const lastPunishTimestamps = new Map();
 let botLogChannel = null;
 
 async function reportError(error) {
@@ -67,7 +69,7 @@ const commands = [
                 .setRequired(true))
         .addStringOption(option =>
             option.setName('duration')
-                .setDescription('Duration of the mute in minutes (e.g., "60").')
+                .setDescription('Duration of the mute (e.g., "30m", "2h", "1d").')
                 .setRequired(true))
         .addStringOption(option =>
             option.setName('reason')
@@ -241,6 +243,21 @@ function determinePunishmentDuration(count) {
     return 60 * 24 * 7; // 1 week
 }
 
+function parseDuration(input) {
+    let total = 0;
+    const regex = /(\d+)([smhd]?)/gi;
+    let match;
+    while ((match = regex.exec(input)) !== null) {
+        const value = parseInt(match[1], 10);
+        const unit = match[2] || 'm';
+        if (unit === 's') total += value / 60;
+        else if (unit === 'h') total += value * 60;
+        else if (unit === 'd') total += value * 1440;
+        else total += value;
+    }
+    return Math.round(total);
+}
+
 async function applyPunishment(member, type, durationMinutes, reason, moderatorId) {
     let punishId = `${Date.now()}-${member.id.slice(-4)}`;
     let endTime = Date.now() + durationMinutes * 60 * 1000;
@@ -257,6 +274,7 @@ async function applyPunishment(member, type, durationMinutes, reason, moderatorI
                 saveData();
                 const roleId = MUTE_ROLE_ID;
                 await member.roles.add(roleId, reason);
+                lastPunishTimestamps.set(member.id, Date.now());
                 return { punishId, endTime };
             }
         }
@@ -274,14 +292,24 @@ async function applyPunishment(member, type, durationMinutes, reason, moderatorI
 
     const roleId = type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
     await member.roles.add(roleId, reason);
+    lastPunishTimestamps.set(member.id, Date.now());
     return { punishId, endTime };
 }
 
-async function issueWarn(member, reason, moderatorId = client.user.id) {
+async function issueWarn(member, reason, moderatorId = client.user.id, ignoreDelay = false) {
+    const now = Date.now();
+    if (!ignoreDelay) {
+        const last = lastPunishTimestamps.get(member.id);
+        if (last && now - last < PUNISH_DELAY_MS) {
+            return null;
+        }
+    }
+
     const { warnId, warnCount } = addWarn(member.id, reason);
     const duration = determinePunishmentDuration(warnCount);
     const type = warnCount >= 15 ? 'ban' : 'mute';
     const { punishId, endTime } = await applyPunishment(member, type, duration, reason, moderatorId);
+    lastPunishTimestamps.set(member.id, now);
     return { warnId, warnCount, type, duration, punishId, endTime };
 }
 
@@ -300,6 +328,7 @@ async function alertAndLog(message, reason) {
         .setTimestamp();
 
     const result = await issueWarn(message.member, reason, client.user.id);
+    if (!result) return;
 
     embed.addFields(
         { name: 'Action Taken', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
@@ -395,10 +424,9 @@ client.on(Events.InteractionCreate, async interaction => {
             return interaction.reply({ content: 'You cannot mute the server owner or staff members.', ephemeral: true });
         }
         
-        const duration = parseInt(durationInput, 10);
+        const duration = parseDuration(durationInput);
         if (isNaN(duration) || duration <= 0) {
-            // FIXED: Use ephemeral: true
-            return interaction.reply({ content: 'Please provide a valid, positive number for the duration in minutes.', ephemeral: true });
+            return interaction.reply({ content: 'Please provide a valid duration such as "30m", "2h", or "1d".', ephemeral: true });
         }
         
         // --- HIERARCHY CHECKS ---
@@ -487,7 +515,7 @@ client.on(Events.InteractionCreate, async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            const result = await issueWarn(user, reason, interaction.user.id);
+            const result = await issueWarn(user, reason, interaction.user.id, true);
 
             await interaction.editReply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.` });
 

@@ -16,7 +16,7 @@ const commands = [
                 .setRequired(true))
         .addStringOption(option => // Using String to match the fix in index.js
             option.setName('duration')
-                .setDescription('Duration of the mute in minutes (e.g., "60").')
+                .setDescription('Duration of the mute (e.g., "30m", "2h", "1d").')
                 .setRequired(true))
         .addStringOption(option =>
             option.setName('reason')
