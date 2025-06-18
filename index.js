@@ -242,8 +242,25 @@ function determinePunishmentDuration(count) {
 }
 
 async function applyPunishment(member, type, durationMinutes, reason, moderatorId) {
-    const punishId = `${Date.now()}-${member.id.slice(-4)}`;
-    const endTime = Date.now() + durationMinutes * 60 * 1000;
+    let punishId = `${Date.now()}-${member.id.slice(-4)}`;
+    let endTime = Date.now() + durationMinutes * 60 * 1000;
+
+    // --- STACKING LOGIC FOR MUTES ---
+    if (type === 'mute') {
+        for (const [id, data] of Object.entries(punishmentData)) {
+            if (data.userId === member.id && data.guildId === member.guild.id && data.type === 'mute') {
+                // Extend existing mute
+                endTime = Math.max(data.endTime, Date.now()) + durationMinutes * 60 * 1000;
+                punishmentData[id].endTime = endTime;
+                punishmentData[id].reason = reason; // update reason to latest
+                punishId = id;
+                saveData();
+                const roleId = MUTE_ROLE_ID;
+                await member.roles.add(roleId, reason);
+                return { punishId, endTime };
+            }
+        }
+    }
 
     punishmentData[punishId] = {
         userId: member.id,
@@ -565,6 +582,7 @@ client.on(Events.InteractionCreate, async interaction => {
     } else if (commandName === 'mod-log') {
         const user = interaction.options.getUser('user');
         const activePunishments = Object.entries(punishmentData).filter(([, data]) => data.userId === user.id && data.guildId === interaction.guild.id);
+        let totalMuteMs = 0;
 
         if (activePunishments.length === 0) {
             // FIXED: Use ephemeral: true
@@ -581,6 +599,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
         activePunishments.forEach(([mid, data]) => {
             const moderator = interaction.guild.members.cache.get(data.moderatorId);
+            if (data.type === 'mute') {
+                totalMuteMs += Math.max(0, data.endTime - Date.now());
+            }
             embed.addFields({
                 name: `${data.type === 'ban' ? 'Ban' : 'Mute'} ID: \`${mid}\``,
                 value: `**Reason:** ${data.reason}\n` +
@@ -588,6 +609,10 @@ client.on(Events.InteractionCreate, async interaction => {
                        `**Expires:** <t:${Math.floor(data.endTime / 1000)}:R>`
             });
         });
+
+        if (totalMuteMs > 0) {
+            embed.addFields({ name: 'Total Mute Time', value: `${Math.ceil(totalMuteMs / 60000)} minutes` });
+        }
         
         await interaction.editReply({ embeds: [embed] });
     } else if (commandName === 'clear-message') {
