@@ -258,6 +258,26 @@ function parseDuration(input) {
     return Math.round(total);
 }
 
+function formatDuration(minutes) {
+    const units = [
+        { label: 'month', value: 43200 },
+        { label: 'day', value: 1440 },
+        { label: 'hour', value: 60 },
+        { label: 'minute', value: 1 }
+    ];
+    const parts = [];
+    for (const { label, value } of units) {
+        if (minutes >= value) {
+            const amount = Math.floor(minutes / value);
+            if (amount > 0) {
+                parts.push(`${amount} ${label}${amount === 1 ? '' : 's'}`);
+                minutes %= value;
+            }
+        }
+    }
+    return parts.join(' ');
+}
+
 async function applyPunishment(member, type, durationMinutes, reason, moderatorId) {
     let punishId = `${Date.now()}-${member.id.slice(-4)}`;
     let endTime = Date.now() + durationMinutes * 60 * 1000;
@@ -330,8 +350,9 @@ async function alertAndLog(message, reason) {
     const result = await issueWarn(message.member, reason, client.user.id);
     if (!result) return;
 
+    const resultDuration = formatDuration(result.duration);
     embed.addFields(
-        { name: 'Action Taken', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
+        { name: 'Action Taken', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${resultDuration}`, inline: true },
         { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
         { name: 'Punishment ID', value: `\`${result.punishId}\`` }
     );
@@ -344,7 +365,7 @@ async function alertAndLog(message, reason) {
             .addFields(
                 { name: 'Reason', value: reason },
                 { name: 'Current Warns', value: `${result.warnCount}` },
-                { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes` },
+                { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${resultDuration}` },
                 { name: 'Punishment ID', value: `\`${result.punishId}\`` }
             )
             .setTimestamp();
@@ -425,6 +446,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         
         const duration = parseDuration(durationInput);
+        const prettyDuration = formatDuration(duration);
         if (isNaN(duration) || duration <= 0) {
             return interaction.reply({ content: 'Please provide a valid duration such as "30m", "2h", or "1d".', ephemeral: true });
         }
@@ -452,7 +474,7 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
             const { punishId, endTime } = await applyPunishment(user, 'mute', duration, reason, interaction.user.id);
 
-            await interaction.editReply({ content: `Successfully muted ${user.toString()} for ${duration} minutes.` });
+            await interaction.editReply({ content: `Successfully muted ${user.toString()} for ${prettyDuration}.` });
 
             await user.send({
                 embeds: [
@@ -461,7 +483,7 @@ client.on(Events.InteractionCreate, async interaction => {
                         .setColor(0xED4245) // Red
                         .addFields(
                             { name: "Reason", value: reason },
-                            { name: "Duration", value: `${duration} minutes` },
+                            { name: "Duration", value: prettyDuration },
                             { name: "Expires", value: `<t:${Math.floor(endTime / 1000)}:R>` }
                         )
                         .setTimestamp()
@@ -476,7 +498,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     .addFields(
                         { name: "User", value: user.toString(), inline: true },
                         { name: "Moderator", value: interaction.user.toString(), inline: true },
-                        { name: "Duration", value: `${duration} minutes`, inline: true },
+                        { name: "Duration", value: prettyDuration, inline: true },
                         { name: "Reason", value: reason },
                         { name: "Expires", value: `<t:${Math.floor(endTime / 1000)}:F>` },
                         { name: "Punishment ID", value: `\`${punishId}\`` }
@@ -516,8 +538,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
         try {
             const result = await issueWarn(user, reason, interaction.user.id, true);
+            const warnDuration = formatDuration(result.duration);
 
-            await interaction.editReply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${result.duration} minutes.` });
+            await interaction.editReply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${warnDuration}.` });
 
             await user.send({
                 embeds: [
@@ -527,7 +550,7 @@ client.on(Events.InteractionCreate, async interaction => {
                         .addFields(
                             { name: 'Reason', value: reason },
                             { name: 'Warn Count', value: `${result.warnCount}` },
-                            { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes` },
+                            { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${warnDuration}` },
                             { name: 'Punishment ID', value: `\`${result.punishId}\`` }
                         )
                         .setTimestamp()
@@ -544,7 +567,7 @@ client.on(Events.InteractionCreate, async interaction => {
                         { name: 'Moderator', value: interaction.user.toString(), inline: true },
                         { name: 'Reason', value: reason },
                         { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
-                        { name: 'Action', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${result.duration} minutes`, inline: true },
+                        { name: 'Action', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${warnDuration}`, inline: true },
                         { name: 'Punishment ID', value: `\`${result.punishId}\`` }
                     )
                     .setTimestamp();
