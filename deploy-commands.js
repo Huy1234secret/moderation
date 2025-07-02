@@ -67,17 +67,6 @@ const commands = [
                 .setDescription('Only delete messages from this user.')
                 .setRequired(false)),
 
-    new SlashCommandBuilder()
-        .setName('use-item')
-        .setDescription('Use an item from your inventory.')
-        .addStringOption(option =>
-            option.setName('item')
-                .setDescription('Item to use')
-                .setRequired(true)
-                .addChoices(
-                    { name: 'XP Boost', value: 'xp_boost' },
-                    { name: 'Loot Box', value: 'loot_box' },
-                )),
 ]
 .map(command => command.toJSON());
 
