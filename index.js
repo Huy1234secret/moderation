@@ -42,6 +42,9 @@ const client = new Client({
 
 let punishmentData = {};
 let warnData = {};
+const XP_FILE = path.join(__dirname, 'xp.json');
+let xpData = {};
+const voiceSessions = new Map();
 let botLogChannel = null;
 
 async function reportError(error) {
@@ -118,6 +121,18 @@ const commands = [
             option.setName('user')
                 .setDescription('Only delete messages from this user.')
                 .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('use-item')
+        .setDescription('Use an item from your inventory.')
+        .addStringOption(option =>
+            option.setName('item')
+                .setDescription('Item to use')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'XP Boost', value: 'xp_boost' },
+                    { name: 'Loot Box', value: 'loot_box' },
+                )),
 ].map(command => command.toJSON());
 
 async function registerCommands() {
@@ -148,10 +163,17 @@ function loadData() {
         } else {
             warnData = {};
         }
+        if (fs.existsSync(XP_FILE)) {
+            const xpContent = fs.readFileSync(XP_FILE, 'utf8');
+            xpData = JSON.parse(xpContent);
+        } else {
+            xpData = {};
+        }
     } catch (error) {
         reportError(`Failed to load moderation data: ${error}`);
         punishmentData = {};
         warnData = {};
+        xpData = {};
     }
 }
 
@@ -159,6 +181,7 @@ function saveData() {
     try {
         fs.writeFileSync(PUNISH_FILE, JSON.stringify(punishmentData, null, 4));
         fs.writeFileSync(WARN_FILE, JSON.stringify(warnData, null, 4));
+        fs.writeFileSync(XP_FILE, JSON.stringify(xpData, null, 4));
     } catch (error) {
         reportError(`Failed to save moderation data: ${error}`);
     }
@@ -312,6 +335,7 @@ client.once(Events.ClientReady, async c => {
     loadData();
     botLogChannel = await client.channels.fetch(BOT_LOG_CHANNEL_ID).catch(() => null);
     setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
+    setInterval(awardVoiceXp, 60 * 1000);
 });
 
 
@@ -637,6 +661,9 @@ client.on(Events.InteractionCreate, async interaction => {
         );
 
         await interaction.editReply({ embeds: [embed], components: [row] });
+    } else if (commandName === 'use-item') {
+        const item = interaction.options.getString('item');
+        await interaction.reply({ content: `You used ${item}.`, ephemeral: true });
     } else if (commandName === 'clear-message') {
         const count = interaction.options.getInteger('count');
         const targetUser = interaction.options.getUser('user');
@@ -667,6 +694,24 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 });
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    if (!newState.channelId) {
+        voiceSessions.delete(oldState.id);
+    } else {
+        voiceSessions.set(newState.id, true);
+    }
+});
+
+function awardVoiceXp() {
+    for (const userId of voiceSessions.keys()) {
+        const gain = Math.floor(Math.random() * 31) + 30; // 30-60 points
+        xpData[userId] = (xpData[userId] || 0) + gain;
+    }
+    if (voiceSessions.size > 0) {
+        saveData();
+    }
+}
 
 // Add a general error handler to prevent unexpected crashes
 client.on('error', reportError);
