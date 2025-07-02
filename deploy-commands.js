@@ -25,7 +25,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('warn')
-        .setDescription('Warns a user and applies an automatic punishment.')
+        .setDescription('Warns a user. Warns expire after 30 days.')
         .addUserOption(option =>
             option.setName('user')
                 .setDescription('The user to warn.')

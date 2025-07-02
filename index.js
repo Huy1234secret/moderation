@@ -9,7 +9,10 @@ const {
     Events,
     REST,
     Routes,
-    SlashCommandBuilder
+    SlashCommandBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
 } = require('discord.js');
 require('dotenv').config();
 
@@ -23,11 +26,9 @@ const BANNED_ROLE_ID = '1382000757200654427';
 const LOG_CHANNEL_ID = '1381652662642147439';
 // Channel for logging bot errors
 const BOT_LOG_CHANNEL_ID = '1383481711651721307';
-// --- NEW: CHANNELS TO IGNORE FOR AUTO-MOD ---
-const IGNORED_CHANNEL_IDS = ['1380834420189298718'];
 const PUNISH_FILE = path.join(__dirname, 'punishments.json');
 const WARN_FILE = path.join(__dirname, 'warns.json');
-const PUNISH_DELAY_MS = 10 * 1000; // delay between punishments for the same user
+const WARN_EXPIRE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // ---------------------
 
 const client = new Client({
@@ -41,8 +42,6 @@ const client = new Client({
 
 let punishmentData = {};
 let warnData = {};
-const userMessageCache = new Map();
-const lastPunishTimestamps = new Map();
 let botLogChannel = null;
 
 async function reportError(error) {
@@ -78,7 +77,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('warn')
-        .setDescription('Warns a user and applies an automatic punishment.')
+        .setDescription('Warns a user. Warns expire after 30 days.')
         .addUserOption(option =>
             option.setName('user')
                 .setDescription('The user to warn.')
@@ -235,14 +234,6 @@ function addWarn(userId, reason) {
     return { warnId, warnCount: warns.length };
 }
 
-function determinePunishmentDuration(count) {
-    if (count <= 3) return 10;
-    if (count <= 6) return 30;
-    if (count <= 9) return 60;
-    if (count <= 14) return 360;
-    return 60 * 24 * 7; // 1 week
-}
-
 function parseDuration(input) {
     let total = 0;
     const regex = /(\d+)([smhd]?)/gi;
@@ -294,7 +285,6 @@ async function applyPunishment(member, type, durationMinutes, reason, moderatorI
                 saveData();
                 const roleId = MUTE_ROLE_ID;
                 await member.roles.add(roleId, reason);
-                lastPunishTimestamps.set(member.id, Date.now());
                 return { punishId, endTime };
             }
         }
@@ -312,72 +302,7 @@ async function applyPunishment(member, type, durationMinutes, reason, moderatorI
 
     const roleId = type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
     await member.roles.add(roleId, reason);
-    lastPunishTimestamps.set(member.id, Date.now());
     return { punishId, endTime };
-}
-
-async function issueWarn(member, reason, moderatorId = client.user.id, ignoreDelay = false) {
-    const now = Date.now();
-    if (!ignoreDelay) {
-        const last = lastPunishTimestamps.get(member.id);
-        if (last && now - last < PUNISH_DELAY_MS) {
-            return null;
-        }
-    }
-
-    const { warnId, warnCount } = addWarn(member.id, reason);
-    const duration = determinePunishmentDuration(warnCount);
-    const type = warnCount >= 15 ? 'ban' : 'mute';
-    const { punishId, endTime } = await applyPunishment(member, type, duration, reason, moderatorId);
-    lastPunishTimestamps.set(member.id, now);
-    return { warnId, warnCount, type, duration, punishId, endTime };
-}
-
-// --- AUTO-MODERATION HELPER ---
-async function alertAndLog(message, reason) {
-    if (isExempt(message.member)) return;
-    const embed = new EmbedBuilder()
-        .setAuthor({ name: "Auto-Moderation Alert", iconURL: message.guild.iconURL() })
-        .setColor(0xFEE75C) // Yellow
-        .addFields(
-            { name: "Triggered By", value: message.author.toString(), inline: true },
-            { name: "In Channel", value: message.channel.toString(), inline: true },
-            { name: "Reason", value: reason, inline: false },
-            { name: "Message Content", value: `\`\`\`${message.content.substring(0, 500)}\`\`\`` }
-        )
-        .setTimestamp();
-
-    const result = await issueWarn(message.member, reason, client.user.id);
-    if (!result) return;
-
-    const resultDuration = formatDuration(result.duration);
-    embed.addFields(
-        { name: 'Action Taken', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${resultDuration}`, inline: true },
-        { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
-        { name: 'Punishment ID', value: `\`${result.punishId}\`` }
-    );
-
-    try {
-        const dmEmbed = new EmbedBuilder()
-            .setTitle('Auto-Moderation Action')
-            .setColor(0xED4245)
-            .setDescription(`You received a warning in **${message.guild.name}**.`)
-            .addFields(
-                { name: 'Reason', value: reason },
-                { name: 'Current Warns', value: `${result.warnCount}` },
-                { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${resultDuration}` },
-                { name: 'Punishment ID', value: `\`${result.punishId}\`` }
-            )
-            .setTimestamp();
-        await message.author.send({ embeds: [dmEmbed] });
-    } catch (error) {
-        // Can't DM user
-    }
-
-    const logChannel = message.guild.channels.cache.get(LOG_CHANNEL_ID);
-    if (logChannel) {
-        await logChannel.send({ embeds: [embed] });
-    }
 }
 
 // --- EVENTS ---
@@ -389,39 +314,49 @@ client.once(Events.ClientReady, async c => {
     setInterval(checkPunishments, 30 * 1000); // Check every 30 seconds
 });
 
-client.on(Events.MessageCreate, async message => {
-    if (message.author.bot || !message.guild) return;
-
-    if (isExempt(message.member)) return;
-
-    // --- NEW: Check if the message is in an ignored channel ---
-    if (IGNORED_CHANNEL_IDS.includes(message.channel.id)) {
-        return; // Skip all auto-moderation for this channel
-    }
-
-    // Spam Detection
-    const now = Date.now();
-    const userCache = userMessageCache.get(message.author.id) || [];
-    const filteredCache = userCache.filter(ts => now - ts <= 5000); // 5 messages in 5 seconds
-    filteredCache.push(now);
-    userMessageCache.set(message.author.id, filteredCache);
-
-    if (filteredCache.length > 5) {
-        await message.delete().catch(() => {});
-        await alertAndLog(message, "Spamming messages too quickly");
-        userMessageCache.delete(message.author.id); // Clear cache after triggering
-        return;
-    }
-
-    // Line Bypass Detection
-    if ((message.content.match(/\n/g) || []).length > 10) {
-        await message.delete().catch(() => {});
-        await alertAndLog(message, "Excessive line breaks");
-        return;
-    }
-});
 
 client.on(Events.InteractionCreate, async interaction => {
+    if (interaction.isButton()) {
+        const [action, userId, page] = interaction.customId.split(':');
+        if (action === 'show_warns') {
+            const warns = warnData[userId] || [];
+            const pageNum = parseInt(page, 10) || 0;
+            const perPage = 5;
+            const start = pageNum * perPage;
+            const slice = warns.slice(start, start + perPage);
+            const member = await interaction.guild.members.fetch(userId).catch(() => null);
+            const embed = new EmbedBuilder()
+                .setTitle(`Warns for ${member ? member.user.tag : userId}`)
+                .setColor(0x5865F2)
+                .setTimestamp();
+
+            slice.forEach(w => {
+                embed.addFields({
+                    name: `Warn ID: \`${w.id}\``,
+                    value: `**Reason:** ${w.reason}\n**Expires:** <t:${Math.floor((w.timestamp + WARN_EXPIRE_MS)/1000)}:R>`
+                });
+            });
+
+            const maxPage = Math.ceil(warns.length / perPage);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`show_warns:${userId}:${pageNum - 1}`)
+                    .setLabel('Previous')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(pageNum <= 0),
+                new ButtonBuilder()
+                    .setCustomId(`show_warns:${userId}:${pageNum + 1}`)
+                    .setLabel('Next')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(pageNum >= maxPage - 1)
+            );
+
+            await interaction.update({ embeds: [embed], components: [row] });
+            return;
+        }
+        return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
@@ -537,10 +472,10 @@ client.on(Events.InteractionCreate, async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            const result = await issueWarn(user, reason, interaction.user.id, true);
-            const warnDuration = formatDuration(result.duration);
+            const { warnId, warnCount } = addWarn(user.id, reason);
+            const expireTs = Math.floor((Date.now() + WARN_EXPIRE_MS) / 1000);
 
-            await interaction.editReply({ content: `Warned ${user.toString()} (warn #${result.warnCount}). Applied ${result.type === 'ban' ? 'ban' : 'mute'} for ${warnDuration}.` });
+            await interaction.editReply({ content: `Warned ${user.toString()} (warn #${warnCount}).` });
 
             await user.send({
                 embeds: [
@@ -549,9 +484,9 @@ client.on(Events.InteractionCreate, async interaction => {
                         .setColor(0xED4245)
                         .addFields(
                             { name: 'Reason', value: reason },
-                            { name: 'Warn Count', value: `${result.warnCount}` },
-                            { name: 'Punishment', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${warnDuration}` },
-                            { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                            { name: 'Warn Count', value: `${warnCount}` },
+                            { name: 'Warn ID', value: `\`${warnId}\`` },
+                            { name: 'Expires', value: `<t:${expireTs}:R>` }
                         )
                         .setTimestamp()
                 ]
@@ -566,9 +501,9 @@ client.on(Events.InteractionCreate, async interaction => {
                         { name: 'User', value: user.toString(), inline: true },
                         { name: 'Moderator', value: interaction.user.toString(), inline: true },
                         { name: 'Reason', value: reason },
-                        { name: 'Warn Count', value: `${result.warnCount}`, inline: true },
-                        { name: 'Action', value: `${result.type === 'ban' ? 'Ban' : 'Mute'} for ${warnDuration}`, inline: true },
-                        { name: 'Punishment ID', value: `\`${result.punishId}\`` }
+                        { name: 'Warn Count', value: `${warnCount}`, inline: true },
+                        { name: 'Warn ID', value: `\`${warnId}\`` },
+                        { name: 'Expires', value: `<t:${expireTs}:R>` }
                     )
                     .setTimestamp();
                 await logChannel.send({ embeds: [logEmbed] });
@@ -581,27 +516,52 @@ client.on(Events.InteractionCreate, async interaction => {
         const punishId = interaction.options.getString('id');
         const reason = interaction.options.getString('reason') || 'No reason provided';
 
-        if (!punishmentData[punishId]) {
-            // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `Punishment ID \`${punishId}\` not found.`, ephemeral: true });
+        let info = punishmentData[punishId];
+        let isWarn = false;
+        let warnUserId = null;
+
+        if (!info) {
+            for (const [uid, warns] of Object.entries(warnData)) {
+                const idx = warns.findIndex(w => w.id === punishId);
+                if (idx !== -1) {
+                    info = warns[idx];
+                    warnUserId = uid;
+                    isWarn = true;
+                    warns.splice(idx, 1);
+                    if (warns.length === 0) delete warnData[uid];
+                    break;
+                }
+            }
+            if (!info) {
+                return interaction.reply({ content: `Punishment ID \`${punishId}\` not found.`, ephemeral: true });
+            }
         }
 
-        const info = punishmentData[punishId];
-        const user = await interaction.guild.members.fetch(info.userId).catch(() => null);
+        const user = await interaction.guild.members.fetch(isWarn ? warnUserId : info.userId).catch(() => null);
 
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            if (user) {
+            if (user && !isWarn) {
                 const roleId = info.type === 'ban' ? BANNED_ROLE_ID : MUTE_ROLE_ID;
                 await user.roles.remove(roleId, reason);
                 await user.send({
                     embeds: [
                         new EmbedBuilder()
                             .setTitle(`Your punishment was removed in ${interaction.guild.name}`)
-                            .setColor(0x57F287) // Green
+                            .setColor(0x57F287)
                             .setDescription(`Your permissions have been restored by a moderator.`)
                             .addFields({ name: "Reason", value: reason })
+                            .setTimestamp()
+                    ]
+                }).catch(() => {});
+            } else if (user && isWarn) {
+                await user.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle(`Your warning was removed in ${interaction.guild.name}`)
+                            .setColor(0x57F287)
+                            .addFields({ name: 'Reason', value: reason })
                             .setTimestamp()
                     ]
                 }).catch(() => {});
@@ -609,22 +569,25 @@ client.on(Events.InteractionCreate, async interaction => {
 
             const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
             if (logChannel) {
+                const title = isWarn ? 'Warning Removed' : 'Punishment Removed';
                 const logEmbed = new EmbedBuilder()
-                    .setTitle("Punishment Removed")
-                    .setColor(0x57F287) // Green
+                    .setTitle(title)
+                    .setColor(0x57F287)
                     .addFields(
-                        { name: "User", value: user ? user.toString() : `<@${info.userId}>`, inline: true },
-                        { name: "Moderator", value: interaction.user.toString(), inline: true },
-                        { name: "Reason", value: reason, inline: false },
-                        { name: "Original Punishment ID", value: `\`${punishId}\`` }
+                        { name: 'User', value: user ? user.toString() : `<@${isWarn ? warnUserId : info.userId}>`, inline: true },
+                        { name: 'Moderator', value: interaction.user.toString(), inline: true },
+                        { name: 'Reason', value: reason, inline: false },
+                        { name: 'Original ID', value: `\`${punishId}\`` }
                     )
                     .setTimestamp();
                 await logChannel.send({ embeds: [logEmbed] });
             }
 
-            delete punishmentData[punishId];
+            if (!isWarn) {
+                delete punishmentData[punishId];
+            }
             saveData();
-            await interaction.editReply({ content: `Successfully removed punishment from ${user ? user.toString() : `user ID ${info.userId}`}.` });
+            await interaction.editReply({ content: `Successfully removed ${isWarn ? 'warning' : 'punishment'} from ${user ? user.toString() : `user ID ${isWarn ? warnUserId : info.userId}`}.` });
         } catch (error) {
             await reportError(error);
             await interaction.editReply({ content: 'Failed to remove punishment. Please check my permissions.' });
@@ -633,13 +596,9 @@ client.on(Events.InteractionCreate, async interaction => {
     } else if (commandName === 'mod-log') {
         const user = interaction.options.getUser('user');
         const activePunishments = Object.entries(punishmentData).filter(([, data]) => data.userId === user.id && data.guildId === interaction.guild.id);
+        const userWarns = warnData[user.id] || [];
         let totalMuteMs = 0;
 
-        if (activePunishments.length === 0) {
-            // FIXED: Use ephemeral: true
-            return interaction.reply({ content: `${user.toString()} has no active punishments.`, ephemeral: true });
-        }
-        
         await interaction.deferReply({ ephemeral: true });
 
         const embed = new EmbedBuilder()
@@ -661,11 +620,23 @@ client.on(Events.InteractionCreate, async interaction => {
             });
         });
 
+        if (activePunishments.length === 0) {
+            embed.setDescription(`${user.toString()} has no active punishments.`);
+        }
+
         if (totalMuteMs > 0) {
             embed.addFields({ name: 'Total Mute Time', value: `${Math.ceil(totalMuteMs / 60000)} minutes` });
         }
-        
-        await interaction.editReply({ embeds: [embed] });
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`show_warns:${user.id}:0`)
+                .setLabel(`Show Warns (${userWarns.length})`)
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(userWarns.length === 0)
+        );
+
+        await interaction.editReply({ embeds: [embed], components: [row] });
     } else if (commandName === 'clear-message') {
         const count = interaction.options.getInteger('count');
         const targetUser = interaction.options.getUser('user');
